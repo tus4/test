@@ -1,0 +1,359 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>데이터 대시보드</title>
+<style>
+  :root { --bg:#f6f7f9; --card:#ffffff; --ink:#1f2328; --muted:#59636e; --line:#d0d7de; --accent:#0969da; --warn:#9a6700; --warnbg:#fff8c5; }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Apple SD Gothic Neo", "Malgun Gothic", "Noto Sans KR", sans-serif; background:var(--bg); color:var(--ink); font-size:14px; }
+  header { background:var(--card); border-bottom:1px solid var(--line); padding:14px 20px; display:flex; flex-wrap:wrap; gap:8px 16px; align-items:baseline; }
+  header h1 { font-size:20px; margin:0; }
+  header .meta { color:var(--muted); font-size:12px; }
+  .badge { display:inline-block; padding:2px 8px; border-radius:12px; font-size:12px; background:var(--warnbg); color:var(--warn); border:1px solid #d4a72c; }
+  main { padding:16px 20px; max-width:1400px; margin:0 auto; }
+  .nav { display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin-bottom:12px; }
+  .nav select { padding:6px 8px; font-size:14px; }
+  .tabs { display:flex; flex-wrap:wrap; gap:4px; }
+  .tabs button { border:1px solid var(--line); background:var(--card); padding:6px 12px; border-radius:6px; cursor:pointer; font-size:13px; }
+  .tabs button.active { background:var(--accent); color:#fff; border-color:var(--accent); }
+  .cards { display:grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap:10px; margin:12px 0; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:8px; padding:12px; }
+  .card .label { color:var(--muted); font-size:12px; }
+  .card .value { font-size:22px; font-weight:600; margin-top:4px; word-break:break-all; }
+  .notes { background:var(--warnbg); border:1px solid #d4a72c; border-radius:8px; padding:8px 12px; margin:8px 0; font-size:13px; }
+  .notes ul { margin:4px 0 0 18px; padding:0; }
+  .charts { display:grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap:12px; margin:12px 0; }
+  .chart h3 { font-size:14px; margin:0 0 8px; }
+  .chart svg { width:100%; height:auto; display:block; }
+  .section { background:var(--card); border:1px solid var(--line); border-radius:8px; padding:12px; margin:12px 0; overflow:auto; }
+  .section h2 { font-size:16px; margin:0 0 8px; }
+  table { border-collapse:collapse; width:100%; font-size:13px; }
+  th, td { border-bottom:1px solid var(--line); padding:6px 8px; text-align:left; white-space:nowrap; max-width:320px; overflow:hidden; text-overflow:ellipsis; }
+  th { background:#f0f3f6; position:sticky; top:0; cursor:pointer; user-select:none; }
+  th .dir { color:var(--accent); font-size:11px; margin-left:4px; }
+  td.num, th.num { text-align:right; font-variant-numeric: tabular-nums; }
+  .toolbar { display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin-bottom:8px; }
+  .toolbar input { padding:6px 8px; font-size:14px; min-width:240px; border:1px solid var(--line); border-radius:6px; }
+  .toolbar .count { color:var(--muted); font-size:12px; }
+  .pager button { border:1px solid var(--line); background:var(--card); padding:4px 10px; border-radius:6px; cursor:pointer; }
+  .empty { color:var(--muted); padding:20px; text-align:center; }
+  footer { color:var(--muted); font-size:12px; padding:20px; text-align:center; }
+  .error { background:#ffebe9; border:1px solid #ff8182; color:#a40e26; padding:12px; border-radius:8px; margin:20px; }
+</style>
+</head>
+<body>
+<header>
+  <h1 id="title">데이터 대시보드</h1>
+  <span id="sample-badge" class="badge" hidden>샘플 데이터</span>
+  <span class="meta" id="meta"></span>
+</header>
+<main>
+  <div id="sample-banner" class="notes" hidden>⚠️ 합성 샘플 데이터입니다. 실제 데이터가 아니며, 비공개 저장소에 Excel 파일을 올리면 이 대시보드는 실제 데이터로 교체됩니다.</div>
+  <div class="nav">
+    <label>파일 <select id="file-select"></select></label>
+    <div class="tabs" id="sheet-tabs"></div>
+  </div>
+  <div id="content"></div>
+</main>
+<footer>
+  비공개 데이터 저장소의 Excel 파일에서 자동 생성된 대시보드입니다. 원본 파일은 공개되지 않으며, 표시 범위는 설정(dashboard.config.json)으로 제한할 수 있습니다.
+</footer>
+<script src="data/dashboard.js"></script>
+<script>
+(function () {
+  "use strict";
+  var PALETTE = ["#0969da", "#1a7f37", "#bf8700", "#cf222e", "#8250df", "#0598bc", "#e16f24", "#6e7781", "#2da44e", "#a475f9", "#d4a72c", "#57606a"];
+  var PAGE_SIZE = 50;
+  var nf = new Intl.NumberFormat("ko-KR", { maximumFractionDigits: 2 });
+  var TYPE_LABELS = { number: "숫자", percent: "비율(%)", date: "날짜", datetime: "날짜/시간", time: "시간", text: "텍스트", empty: "비어 있음" };
+
+  function esc(s) { return String(s).replace(/[&<>"']/g, function (c) { return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]; }); }
+  function el(tag, attrs, children) {
+    var node = document.createElement(tag);
+    if (attrs) { Object.keys(attrs).forEach(function (k) { if (k === "text") node.textContent = attrs[k]; else if (k === "html") node.innerHTML = attrs[k]; else node.setAttribute(k, attrs[k]); }); }
+    (children || []).forEach(function (c) { if (c) node.appendChild(typeof c === "string" ? document.createTextNode(c) : c); });
+    return node;
+  }
+  function fmt(value, type) {
+    if (value === null || value === undefined) return "";
+    if (typeof value === "number") {
+      if (type === "percent") return nf.format(value * 100) + "%";
+      return nf.format(value);
+    }
+    return String(value);
+  }
+  function shorten(s, n) { s = String(s); return s.length > n ? s.slice(0, n - 1) + "…" : s; }
+
+  // ---------- SVG charts (no external library; works offline and from file://) ----------
+  function svgEl(tag, attrs) {
+    var node = document.createElementNS("http://www.w3.org/2000/svg", tag);
+    Object.keys(attrs || {}).forEach(function (k) { node.setAttribute(k, attrs[k]); });
+    return node;
+  }
+  function barChart(labels, values) {
+    var W = 640, H = 300, L = 60, R = 10, T = 10, B = 70;
+    var svg = svgEl("svg", { viewBox: "0 0 " + W + " " + H, role: "img" });
+    var max = Math.max.apply(null, values.map(function (v) { return Math.abs(v); }).concat([0]));
+    if (max === 0) max = 1;
+    var plotW = W - L - R, plotH = H - T - B;
+    var n = labels.length, slot = plotW / Math.max(n, 1), bw = Math.max(4, slot * 0.7);
+    var zeroY = T + plotH;
+    var hasNeg = values.some(function (v) { return v < 0; });
+    if (hasNeg) zeroY = T + plotH / 2;
+    var scale = (hasNeg ? plotH / 2 : plotH) / max;
+    svg.appendChild(svgEl("line", { x1: L, y1: zeroY, x2: W - R, y2: zeroY, stroke: "#d0d7de" }));
+    var ticks = 4;
+    for (var t = 0; t <= ticks; t++) {
+      var v = max * t / ticks, y = zeroY - v * scale;
+      var lab = svgEl("text", { x: L - 6, y: y + 4, "text-anchor": "end", "font-size": "10", fill: "#59636e" });
+      lab.textContent = nf.format(v);
+      svg.appendChild(lab);
+      svg.appendChild(svgEl("line", { x1: L, y1: y, x2: W - R, y2: y, stroke: "#eaeef2" }));
+    }
+    labels.forEach(function (label, i) {
+      var v = values[i], h = Math.abs(v) * scale, x = L + i * slot + (slot - bw) / 2;
+      var y = v >= 0 ? zeroY - h : zeroY;
+      var rect = svgEl("rect", { x: x, y: y, width: bw, height: h, fill: PALETTE[i % PALETTE.length], rx: 2 });
+      var title = svgEl("title", {}); title.textContent = label + ": " + nf.format(v); rect.appendChild(title);
+      svg.appendChild(rect);
+      var tx = svgEl("text", { x: x + bw / 2, y: T + plotH + 14, "font-size": "10", fill: "#1f2328", "text-anchor": "end", transform: "rotate(-35 " + (x + bw / 2) + " " + (T + plotH + 14) + ")" });
+      tx.textContent = shorten(label, 14);
+      svg.appendChild(tx);
+    });
+    return svg;
+  }
+  function donutChart(labels, values) {
+    var W = 640, H = 300, cx = 150, cy = 150, r = 110, ri = 60;
+    var svg = svgEl("svg", { viewBox: "0 0 " + W + " " + H, role: "img" });
+    var total = values.reduce(function (a, b) { return a + Math.max(b, 0); }, 0);
+    if (total <= 0) { var t0 = svgEl("text", { x: 20, y: 40, "font-size": "12" }); t0.textContent = "표시할 값이 없습니다"; svg.appendChild(t0); return svg; }
+    var angle = -Math.PI / 2;
+    labels.forEach(function (label, i) {
+      var v = Math.max(values[i], 0), frac = v / total, a2 = angle + frac * Math.PI * 2;
+      if (frac <= 0) return;
+      var large = frac > 0.5 ? 1 : 0;
+      var x1 = cx + r * Math.cos(angle), y1 = cy + r * Math.sin(angle), x2 = cx + r * Math.cos(a2), y2 = cy + r * Math.sin(a2);
+      var xi1 = cx + ri * Math.cos(a2), yi1 = cy + ri * Math.sin(a2), xi2 = cx + ri * Math.cos(angle), yi2 = cy + ri * Math.sin(angle);
+      var d = frac >= 0.9999
+        ? "M " + (cx + r) + " " + cy + " A " + r + " " + r + " 0 1 1 " + (cx - r) + " " + cy + " A " + r + " " + r + " 0 1 1 " + (cx + r) + " " + cy + " M " + (cx + ri) + " " + cy + " A " + ri + " " + ri + " 0 1 0 " + (cx - ri) + " " + cy + " A " + ri + " " + ri + " 0 1 0 " + (cx + ri) + " " + cy
+        : "M " + x1 + " " + y1 + " A " + r + " " + r + " 0 " + large + " 1 " + x2 + " " + y2 + " L " + xi1 + " " + yi1 + " A " + ri + " " + ri + " 0 " + large + " 0 " + xi2 + " " + yi2 + " Z";
+      var path = svgEl("path", { d: d, fill: PALETTE[i % PALETTE.length], "fill-rule": "evenodd" });
+      var title = svgEl("title", {}); title.textContent = label + ": " + nf.format(v) + " (" + (frac * 100).toFixed(1) + "%)"; path.appendChild(title);
+      svg.appendChild(path);
+      angle = a2;
+    });
+    labels.forEach(function (label, i) {
+      var y = 24 + i * 20;
+      if (y > H - 10) return;
+      svg.appendChild(svgEl("rect", { x: 310, y: y - 10, width: 12, height: 12, fill: PALETTE[i % PALETTE.length], rx: 2 }));
+      var tx = svgEl("text", { x: 328, y: y, "font-size": "12", fill: "#1f2328" });
+      tx.textContent = shorten(label, 22) + "  " + nf.format(values[i]) + " (" + (Math.max(values[i], 0) / total * 100).toFixed(1) + "%)";
+      svg.appendChild(tx);
+    });
+    return svg;
+  }
+  function lineChart(labels, values) {
+    var W = 640, H = 300, L = 60, R = 10, T = 10, B = 60;
+    var svg = svgEl("svg", { viewBox: "0 0 " + W + " " + H, role: "img" });
+    var max = Math.max.apply(null, values.concat([0])), min = Math.min.apply(null, values.concat([0]));
+    if (max === min) max = min + 1;
+    var plotW = W - L - R, plotH = H - T - B, n = labels.length;
+    var x = function (i) { return L + (n > 1 ? i * plotW / (n - 1) : plotW / 2); };
+    var y = function (v) { return T + plotH - (v - min) / (max - min) * plotH; };
+    for (var t = 0; t <= 4; t++) {
+      var v = min + (max - min) * t / 4, yy = y(v);
+      svg.appendChild(svgEl("line", { x1: L, y1: yy, x2: W - R, y2: yy, stroke: "#eaeef2" }));
+      var lab = svgEl("text", { x: L - 6, y: yy + 4, "text-anchor": "end", "font-size": "10", fill: "#59636e" });
+      lab.textContent = nf.format(v); svg.appendChild(lab);
+    }
+    var d = values.map(function (v, i) { return (i === 0 ? "M" : "L") + x(i) + " " + y(v); }).join(" ");
+    svg.appendChild(svgEl("path", { d: d, fill: "none", stroke: PALETTE[0], "stroke-width": 2 }));
+    var step = Math.max(1, Math.ceil(n / 12));
+    labels.forEach(function (label, i) {
+      var c = svgEl("circle", { cx: x(i), cy: y(values[i]), r: 3, fill: PALETTE[0] });
+      var title = svgEl("title", {}); title.textContent = label + ": " + nf.format(values[i]); c.appendChild(title);
+      svg.appendChild(c);
+      if (i % step === 0 || i === n - 1) {
+        var tx = svgEl("text", { x: x(i), y: T + plotH + 14, "font-size": "10", fill: "#1f2328", "text-anchor": "end", transform: "rotate(-35 " + x(i) + " " + (T + plotH + 14) + ")" });
+        tx.textContent = label; svg.appendChild(tx);
+      }
+    });
+    return svg;
+  }
+
+  // ---------- rendering ----------
+  var data = window.DASHBOARD_DATA;
+  var state = { file: 0, sheet: 0, query: "", sortCol: -1, sortDir: 1, page: 0 };
+
+  function renderHeader() {
+    document.getElementById("title").textContent = data.title || "데이터 대시보드";
+    document.title = data.title || "데이터 대시보드";
+    if (data.sample) { document.getElementById("sample-badge").hidden = false; document.getElementById("sample-banner").hidden = false; }
+    var nSheets = data.files.reduce(function (a, f) { return a + f.sheets.length; }, 0);
+    var cfg = data.config || {};
+    var mode = cfg.mode === "aggregates" ? "집계만 공개 (행 데이터 비공개)" : "행 데이터 공개 (시트당 최대 " + nf.format(cfg.max_rows || 0) + "행, " + (cfg.max_columns || 0) + "열, 셀 텍스트 " + (cfg.max_cell_text || 0) + "자)";
+    if (cfg.auto_exclude_sensitive !== false) mode += " · 개인정보 추정 열 자동 제외";
+    var excludedFiles = data.excluded_files ? " · 설정으로 제외한 파일 " + data.excluded_files + "개" : "";
+    document.getElementById("meta").textContent = "파일 " + data.files.length + "개 · 시트 " + nSheets + "개 · " + mode + excludedFiles + " · 데이터 지문 " + (data.fingerprint || "");
+  }
+  function renderNav() {
+    var sel = document.getElementById("file-select");
+    sel.innerHTML = "";
+    data.files.forEach(function (f, i) { sel.appendChild(el("option", { value: String(i), text: f.path })); });
+    sel.value = String(state.file);
+    sel.onchange = function () { state.file = Number(sel.value); state.sheet = 0; resetTable(); renderNav(); renderContent(); };
+    var tabs = document.getElementById("sheet-tabs");
+    tabs.innerHTML = "";
+    var file = data.files[state.file];
+    if (!file) return;
+    file.sheets.forEach(function (s, i) {
+      var b = el("button", { text: s.name + (s.state === "empty" ? " (빈 시트)" : "") });
+      if (i === state.sheet) b.className = "active";
+      b.onclick = function () { state.sheet = i; resetTable(); renderNav(); renderContent(); };
+      tabs.appendChild(b);
+    });
+  }
+  function resetTable() { state.query = ""; state.sortCol = -1; state.sortDir = 1; state.page = 0; }
+
+  function renderContent() {
+    var root = document.getElementById("content");
+    root.innerHTML = "";
+    var file = data.files[state.file];
+    if (!file) { root.appendChild(el("div", { class: "empty", text: "공개할 워크북이 없습니다." })); return; }
+    var sheet = file.sheets[state.sheet];
+    if (!sheet) { root.appendChild(el("div", { class: "empty", text: "시트가 없습니다." })); return; }
+    if (file.notes && file.notes.length) root.appendChild(notesBox(file.notes));
+    if (sheet.state === "empty") { root.appendChild(el("div", { class: "empty", text: "빈 시트입니다." })); return; }
+
+    var cards = el("div", { class: "cards" });
+    [["총 행 수", nf.format(sheet.rows_total)], ["공개 행 수", nf.format(sheet.rows_published)], ["열 수 (공개/전체)", sheet.columns_published + " / " + sheet.columns_total], ["헤더 행", String(sheet.header_row)]].forEach(function (kv) {
+      cards.appendChild(el("div", { class: "card" }, [el("div", { class: "label", text: kv[0] }), el("div", { class: "value", text: kv[1] })]));
+    });
+    sheet.columns.forEach(function (c) {
+      if ((c.type === "number") && c.stats && typeof c.stats.sum === "number") {
+        cards.appendChild(el("div", { class: "card" }, [el("div", { class: "label", text: c.name + " 합계" }), el("div", { class: "value", text: nf.format(c.stats.sum) })]));
+      }
+    });
+    root.appendChild(cards);
+    if (sheet.title) root.appendChild(el("div", { class: "notes", text: "제목 행: " + sheet.title }));
+    if (sheet.notes && sheet.notes.length) root.appendChild(notesBox(sheet.notes));
+
+    if (sheet.charts && sheet.charts.length) {
+      var charts = el("div", { class: "charts" });
+      sheet.charts.forEach(function (c) {
+        var box = el("div", { class: "section chart" }, [el("h3", { text: c.title })]);
+        var values = c.values.map(Number);
+        if (c.kind === "pie") box.appendChild(donutChart(c.labels, values));
+        else if (c.kind === "bar") box.appendChild(barChart(c.labels, values));
+        else box.appendChild(lineChart(c.labels, values));
+        charts.appendChild(box);
+      });
+      root.appendChild(charts);
+    }
+
+    var colSec = el("div", { class: "section" }, [el("h2", { text: "열 요약" })]);
+    var ct = el("table");
+    ct.appendChild(el("thead", {}, [el("tr", {}, ["열", "Excel 열", "유형", "값 개수", "요약"].map(function (h) { return el("th", { text: h }); }))]));
+    var ctb = el("tbody");
+    sheet.columns.forEach(function (c) {
+      ctb.appendChild(el("tr", {}, [el("td", { text: c.name }), el("td", { text: c.excel_column }), el("td", { text: TYPE_LABELS[c.type] || c.type }), el("td", { class: "num", text: nf.format(c.non_empty) }), el("td", { text: statsText(c) })]));
+    });
+    ct.appendChild(ctb);
+    colSec.appendChild(ct);
+    root.appendChild(colSec);
+
+    root.appendChild(renderTable(sheet));
+  }
+  function notesBox(notes) {
+    return el("div", { class: "notes" }, [el("ul", {}, notes.map(function (n) { return el("li", { text: n }); }))]);
+  }
+  function statsText(c) {
+    var s = c.stats || {};
+    if (c.type === "percent") return "평균 " + fmt(s.mean, c.type) + " · 최소 " + fmt(s.min, c.type) + " · 최대 " + fmt(s.max, c.type);
+    if (c.type === "number") return "합계 " + fmt(s.sum, c.type) + " · 평균 " + fmt(s.mean, c.type) + " · 최소 " + fmt(s.min, c.type) + " · 최대 " + fmt(s.max, c.type);
+    if (c.type === "date" || c.type === "datetime") return (s.min || "") + " ~ " + (s.max || "");
+    if (c.type === "empty") return "값 없음";
+    var top = (s.top || []).slice(0, 3).map(function (kv) { return kv[0] + " (" + nf.format(kv[1]) + ")"; }).join(", ");
+    return "고유값 " + nf.format(s.distinct || 0) + (s.distinct_is_lower_bound ? "+" : "") + "개" + (top ? " · 상위: " + top : "");
+  }
+
+  function renderTable(sheet) {
+    var sec = el("div", { class: "section" }, [el("h2", { text: "데이터" })]);
+    if (!sheet.rows || !sheet.rows.length) {
+      sec.appendChild(el("div", { class: "empty", text: (data.config && data.config.mode === "aggregates") ? "집계 전용 모드: 행 데이터는 공개하지 않습니다 (위의 통계와 차트만 제공됩니다)." : "공개된 행이 없습니다." }));
+      return sec;
+    }
+    var toolbar = el("div", { class: "toolbar" });
+    var input = el("input", { type: "search", placeholder: "검색 (모든 열)", value: state.query });
+    var count = el("span", { class: "count" });
+    var pager = el("span", { class: "pager" });
+    toolbar.appendChild(input); toolbar.appendChild(count); toolbar.appendChild(pager);
+    sec.appendChild(toolbar);
+    var table = el("table");
+    sec.appendChild(table);
+    var cols = sheet.columns;
+
+    function filtered() {
+      var q = state.query.trim().toLowerCase();
+      var rows = sheet.rows.map(function (r, i) { return { i: i, r: r }; });
+      if (q) rows = rows.filter(function (o) { return o.r.some(function (v, j) { return v !== null && fmt(v, cols[j].type).toLowerCase().indexOf(q) !== -1; }); });
+      if (state.sortCol >= 0) {
+        var j = state.sortCol, type = cols[j].type, dir = state.sortDir;
+        rows.sort(function (a, b) {
+          var va = a.r[j], vb = b.r[j];
+          if (va === null || va === undefined) return vb === null || vb === undefined ? a.i - b.i : 1;
+          if (vb === null || vb === undefined) return -1;
+          var c;
+          if (type === "number" || type === "percent") c = Number(va) - Number(vb);
+          else c = String(va).localeCompare(String(vb), "ko");
+          return c === 0 ? a.i - b.i : c * dir;
+        });
+      }
+      return rows;
+    }
+    function draw() {
+      var rows = filtered();
+      var pages = Math.max(1, Math.ceil(rows.length / PAGE_SIZE));
+      if (state.page >= pages) state.page = pages - 1;
+      count.textContent = nf.format(rows.length) + " / " + nf.format(sheet.rows.length) + "행 · " + (state.page + 1) + "/" + pages + "페이지";
+      pager.innerHTML = "";
+      var prev = el("button", { text: "이전" }), next = el("button", { text: "다음" });
+      prev.disabled = state.page === 0; next.disabled = state.page >= pages - 1;
+      prev.onclick = function () { state.page--; draw(); }; next.onclick = function () { state.page++; draw(); };
+      pager.appendChild(prev); pager.appendChild(next);
+      table.innerHTML = "";
+      var thead = el("thead"), tr = el("tr");
+      cols.forEach(function (c, j) {
+        var isNum = c.type === "number" || c.type === "percent";
+        var th = el("th", { class: isNum ? "num" : "", title: TYPE_LABELS[c.type] || c.type }, [c.name]);
+        if (state.sortCol === j) th.appendChild(el("span", { class: "dir", text: state.sortDir > 0 ? "▲" : "▼" }));
+        th.onclick = function () { if (state.sortCol === j) state.sortDir = -state.sortDir; else { state.sortCol = j; state.sortDir = 1; } draw(); };
+        tr.appendChild(th);
+      });
+      thead.appendChild(tr); table.appendChild(thead);
+      var tbody = el("tbody");
+      rows.slice(state.page * PAGE_SIZE, (state.page + 1) * PAGE_SIZE).forEach(function (o) {
+        var row = el("tr");
+        o.r.forEach(function (v, j) { var isNum = cols[j].type === "number" || cols[j].type === "percent"; row.appendChild(el("td", { class: isNum ? "num" : "", title: v === null ? "" : String(v), text: fmt(v, cols[j].type) })); });
+        tbody.appendChild(row);
+      });
+      table.appendChild(tbody);
+    }
+    input.oninput = function () { state.query = input.value; state.page = 0; draw(); };
+    draw();
+    return sec;
+  }
+
+  if (!data || !data.files) {
+    document.getElementById("content").innerHTML = '<div class="error">대시보드 데이터(data/dashboard.js)를 찾을 수 없습니다. 빌드가 아직 실행되지 않았거나 파일이 누락되었습니다.</div>';
+    return;
+  }
+  renderHeader();
+  renderNav();
+  renderContent();
+})();
+</script>
+</body>
+</html>

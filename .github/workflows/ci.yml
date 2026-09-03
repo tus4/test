@@ -1,0 +1,52 @@
+# CI for the public tooling repository: unit tests + an end-to-end sample build.
+# Dashboard publishes from the private repository only touch docs/ and README.md; such pushes
+# (made with a PAT, which does trigger workflows) are ignored here so they never turn CI red.
+name: CI
+
+on:
+  push:
+    paths-ignore:
+      - 'docs/**'
+      - 'README.md'
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: python -m pip install --quiet --requirement requirements.txt --requirement requirements-dev.txt
+
+      - name: Run tests
+        run: python -m pytest -q
+
+      # While docs/ still holds the synthetic sample, prove it is reproducible byte-for-byte.
+      # Once real data has been published, docs/ no longer contains the sample and the check is skipped.
+      - name: Committed sample is reproducible (only while docs/ holds the sample)
+        run: |
+          if grep -q '"sample":true' docs/data/dashboard.json; then
+            python -m dashboard_builder.sample --repo-root .
+            git status --porcelain -- docs README.md
+            git diff --exit-code -- docs README.md
+          else
+            echo "docs/ holds real dashboard data; sample reproducibility check skipped."
+          fi
+
+      - name: Build the synthetic sample end to end (in a temporary directory)
+        run: |
+          mkdir -p "$RUNNER_TEMP/sample-target"
+          python -m dashboard_builder.sample --repo-root "$RUNNER_TEMP/sample-target"
+          test -s "$RUNNER_TEMP/sample-target/docs/index.html"
+          test -s "$RUNNER_TEMP/sample-target/docs/data/dashboard.json"
+          grep -q "DASHBOARD:START" "$RUNNER_TEMP/sample-target/README.md"

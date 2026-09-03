@@ -1,0 +1,112 @@
+# Copy this file to  .github/workflows/publish-dashboard.yml  in the PRIVATE data repository (tus4/data1).
+# It is the only file the private repository needs; all tooling lives in the public repository.
+#
+# What it does: when a workbook (*.xlsx / *.xlsm), dashboard.config.json or this file changes on the
+# default branch (or on manual "Run workflow"), it checks out the PUBLIC tooling repository, builds the
+# dashboard from the workbooks in this repository and pushes only the derived output
+# (README block + docs/) to the public repository using the DASHBOARD_PUSH_TOKEN secret.
+#
+# Required secret (Settings > Secrets and variables > Actions > New repository secret):
+#   DASHBOARD_PUSH_TOKEN  = fine-grained PAT, repository access: tus4/test only,
+#                           repository permission "Contents: Read and write".
+name: Publish dashboard
+
+on:
+  push:
+    paths:
+      - '**.xlsx'
+      - '**.xlsm'
+      - '**.XLSX'                                 # upper-case extensions (the build matches them case-insensitively)
+      - '**.XLSM'
+      - '!**/~$*'                                 # Excel lock files (~$name.xlsx)
+      - 'dashboard.config.json'
+      - '.github/workflows/publish-dashboard.yml' # the first commit of this file runs the pipeline
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Build and show what would change, but do not commit or push to the public repository'
+        type: boolean
+        default: false
+
+# One publish at a time; later runs wait for the running one instead of racing it.
+concurrency:
+  group: publish-dashboard
+  cancel-in-progress: false
+
+permissions:
+  contents: read                                  # this workflow never writes to the private repository
+
+env:
+  PUBLIC_REPO: tus4/test          # public repository: tooling lives here, output is pushed here
+  PYTHON_VERSION: '3.11'
+
+jobs:
+  publish:
+    # Only the default branch publishes (pushes to other branches and tags are ignored); manual runs always do.
+    # If pushes to your default branch ever show this job as "skipped", replace the expression after ||
+    # with an explicit branch name, e.g.  github.ref_name == 'main'
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (startsWith(github.ref, 'refs/heads/') && github.ref_name == github.event.repository.default_branch)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Fail early when the secret is missing
+        env:
+          DASHBOARD_PUSH_TOKEN: ${{ secrets.DASHBOARD_PUSH_TOKEN }}
+        run: |
+          if [ -z "$DASHBOARD_PUSH_TOKEN" ]; then
+            echo "::error::Repository secret DASHBOARD_PUSH_TOKEN is not set. See SETUP.md in $PUBLIC_REPO (3단계)."
+            exit 1
+          fi
+          echo "Secret DASHBOARD_PUSH_TOKEN is present."
+
+      - name: Check out this (private) data repository
+        uses: actions/checkout@v7
+        with:
+          path: data1
+
+      # A public repository can be checked out with the default token; the PAT is passed
+      # anyway so that the later `git push` from this checkout is authenticated.
+      - name: Check out the public tooling/output repository
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ env.PUBLIC_REPO }}
+          token: ${{ secrets.DASHBOARD_PUSH_TOKEN }}
+          path: public
+          fetch-depth: 1
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install build dependencies
+        working-directory: public
+        run: python -m pip install --quiet --requirement requirements.txt
+
+      # Builds into a temporary staging directory. Any broken workbook fails this step with the
+      # file/sheet name in the message, and nothing below runs, so the published dashboard is kept.
+      - name: Build dashboard (staging)
+        working-directory: public
+        run: |
+          OWNER="${PUBLIC_REPO%%/*}"
+          NAME="${PUBLIC_REPO#*/}"
+          python -m dashboard_builder.build \
+            --source "$GITHUB_WORKSPACE/data1" \
+            --out "$RUNNER_TEMP/staging" \
+            --pages-url "https://${OWNER}.github.io/${NAME}/"
+
+      # Replaces docs/ and the README block, commits only when something changed, pushes with retry.
+      # DRY_RUN is "true" only for a manual run with the dry_run box ticked; on push events it is empty.
+      - name: Publish to the public repository
+        working-directory: public
+        env:
+          DRY_RUN: ${{ github.event.inputs.dry_run }}
+        run: |
+          EXTRA=""
+          if [ "$DRY_RUN" = "true" ]; then EXTRA="--dry-run"; fi
+          python -m dashboard_builder.publish \
+            --staging "$RUNNER_TEMP/staging" \
+            --repo "$GITHUB_WORKSPACE/public" \
+            --message "Update dashboard (data1@${GITHUB_SHA::7})" $EXTRA
