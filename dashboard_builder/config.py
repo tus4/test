@@ -58,6 +58,16 @@ DEFAULTS: Dict[str, Any] = {
     "readme": {"charts": True, "xychart": False, "preview": True},
     # Fail the run (keeping the old dashboard) when no workbook matches.
     "fail_if_no_workbooks": True,
+    # Wide daily time-series sheets (a "DATES"/"일자" header row followed by dated rows, optional
+    # Category/Ticker/Notation rows above it) are published as a market dashboard: every series in full.
+    "timeseries": {
+        "enabled": True,
+        "highlights": [],       # series (header / notation / name) shown as KPI tiles, in this order
+        "featured": [],         # overview charts: [["UST2Y", "UST10Y"], {"title": "...", "series": [...]}]
+        "clean_outliers": True, # blank zeros that mark missing quotes and isolated one-day spikes
+        "spark_points": 52,     # points per sparkline (last year)
+        "max_series": 1000,     # series per sheet
+    },
 }
 
 _INT_KEYS = (
@@ -127,10 +137,48 @@ def validate_config(raw: Any, source: str = CONFIG_FILENAME) -> Dict[str, Any]:
         elif key in _BOOL_KEYS:
             if not isinstance(value, bool):
                 _fail(source, f"\"{key}\" must be true or false")
+        elif key == "timeseries":
+            cfg["timeseries"].update(_validate_timeseries(value, source))
+            continue
         cfg[key] = copy.deepcopy(value)
     if cfg["preview_rows"] > cfg["max_rows"] and cfg["mode"] == "rows":
         cfg["preview_rows"] = cfg["max_rows"]
     return cfg
+
+
+def _validate_timeseries(value: Any, source: str) -> Dict[str, Any]:
+    if not isinstance(value, dict):
+        _fail(source, "\"timeseries\" must be an object")
+    defaults = DEFAULTS["timeseries"]
+    bad = sorted(k for k in value if k not in defaults)
+    if bad:
+        _fail(source, "unknown \"timeseries\" key(s): " + ", ".join(bad) + ". Allowed keys: " + ", ".join(sorted(defaults)))
+    out: Dict[str, Any] = {}
+    for k, v in value.items():
+        if k in ("enabled", "clean_outliers"):
+            if not isinstance(v, bool):
+                _fail(source, f"\"timeseries.{k}\" must be true or false")
+        elif k in ("spark_points", "max_series"):
+            if isinstance(v, bool) or not isinstance(v, int) or v < (5 if k == "spark_points" else 1):
+                _fail(source, f"\"timeseries.{k}\" must be an integer >= {5 if k == 'spark_points' else 1}")
+        elif k == "highlights":
+            if not isinstance(v, list) or not all(isinstance(x, str) and x.strip() for x in v):
+                _fail(source, "\"timeseries.highlights\" must be a list of non-empty strings")
+        elif k == "featured":
+            if not isinstance(v, list):
+                _fail(source, "\"timeseries.featured\" must be a list")
+            for group in v:
+                if isinstance(group, dict):
+                    extra = sorted(g for g in group if g not in ("title", "series", "mode"))
+                    if extra or not isinstance(group.get("title", ""), str) or group.get("mode", "level") not in ("level", "diff", "rebase"):
+                        _fail(source, "\"timeseries.featured\" objects allow only \"title\" (string), \"series\" (list) and \"mode\" (level | diff | rebase)")
+                    names = group.get("series")
+                else:
+                    names = group
+                if not isinstance(names, list) or not names or not all(isinstance(x, str) and x.strip() for x in names):
+                    _fail(source, "\"timeseries.featured\" entries must be non-empty lists of series names")
+        out[k] = copy.deepcopy(v)
+    return out
 
 
 def load_config(path: Optional[Path]) -> Dict[str, Any]:
@@ -164,5 +212,6 @@ def public_config(cfg: Dict[str, Any]) -> Dict[str, Any]:
         "auto_exclude_sensitive",
         "charts",
         "publish_top_values",
+        "timeseries",
     ]
     return {k: cfg[k] for k in keys}

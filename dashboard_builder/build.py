@@ -15,7 +15,7 @@ import argparse
 import shutil
 import sys
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from .common import (
     STAGING_DOCS_DIR,
@@ -29,11 +29,13 @@ from .config import CONFIG_FILENAME, load_config, public_config
 from .excel import discover_workbooks_with_excluded, extract_workbook
 from .render_readme import render_block
 from .render_site import write_site
+from .timeseries import build_market, market_summary
 
 PAGES_URL_PLACEHOLDER = "(GitHub Pages URL 미설정)"
 
 
-def build_dataset(source: Path, cfg: Dict[str, Any], sample: bool = False) -> Dict[str, Any]:
+def build_datasets(source: Path, cfg: Dict[str, Any], sample: bool = False) -> Tuple[Dict[str, Any], Optional[Dict[str, Any]]]:
+    """(table dataset for dashboard.json, market dataset for the time-series pages or None)."""
     workbooks, excluded_files = discover_workbooks_with_excluded(source, cfg)
     if not workbooks and cfg["fail_if_no_workbooks"]:
         raise BuildError(
@@ -42,6 +44,12 @@ def build_dataset(source: Path, cfg: Dict[str, Any], sample: bool = False) -> Di
             f"Set \"fail_if_no_workbooks\": false in {CONFIG_FILENAME} to publish an empty dashboard instead."
         )
     files = [extract_workbook(path, rel, cfg) for path, rel in workbooks]
+    ts_sheets: List[Dict[str, Any]] = []
+    for f in files:
+        ts_sheets.extend(f.pop("timeseries", []))
+    market = build_market(ts_sheets, cfg) if ts_sheets else None
+    if market is not None and not market["series"]:
+        market = None
     data: Dict[str, Any] = {
         "schema_version": 1,
         "title": cfg["title"],
@@ -50,9 +58,14 @@ def build_dataset(source: Path, cfg: Dict[str, Any], sample: bool = False) -> Di
         "config_source": cfg.get("_source"),
         "excluded_files": excluded_files,  # count only: names of excluded workbooks are never published
         "files": files,
+        "timeseries": market_summary(market) if market else None,
     }
     data["fingerprint"] = fingerprint([[f["path"], f["fingerprint"]] for f in files])
-    return data
+    return data, market
+
+
+def build_dataset(source: Path, cfg: Dict[str, Any], sample: bool = False) -> Dict[str, Any]:
+    return build_datasets(source, cfg, sample=sample)[0]
 
 
 def build(source: Path, out: Path, config_path: Optional[Path], pages_url: str, sample: bool = False) -> Dict[str, Any]:
@@ -61,18 +74,29 @@ def build(source: Path, out: Path, config_path: Optional[Path], pages_url: str, 
     if config_path is None:
         config_path = source / CONFIG_FILENAME
     cfg = load_config(config_path)
-    data = build_dataset(source, cfg, sample=sample)
+    data, market = build_datasets(source, cfg, sample=sample)
     block = render_block(data, cfg, pages_url or PAGES_URL_PLACEHOLDER)
 
     tmp = out.parent / (out.name + ".tmp")
     if tmp.exists():
         shutil.rmtree(tmp)
     tmp.mkdir(parents=True)
-    write_site(data, tmp / STAGING_DOCS_DIR)
+    write_site(data, tmp / STAGING_DOCS_DIR, market=market)
     (tmp / STAGING_README_BLOCK).write_text(block + "\n", encoding="utf-8")
     summary = {
         "fingerprint": data["fingerprint"],
         "mode": cfg["mode"],
+        "timeseries": None
+        if market is None
+        else {
+            "series": len(market["series"]),
+            "dates": len(market["dates"]),
+            "asof": market["asof"],
+            "cleaned_points": market["cleaning"]["points"],
+            "curves": len(market["curves"]),
+            "sources": [f"{s['file']} / {s['sheet']}" for s in market["sources"]],
+            "notes": market["notes"],
+        },
         "config_source": cfg.get("_source"),
         "excluded_files": data["excluded_files"],
         "files": [
@@ -119,6 +143,14 @@ def print_summary(summary: Dict[str, Any]) -> None:
                 f"  - {f['path']} / {s['name']}: {s['state']}, rows {s['rows_published']:,}/{s['rows_total']:,}, "
                 f"columns {s['columns_published']}{excluded}"
             )
+    ts = summary.get("timeseries")
+    if ts:
+        print(
+            f"Time-series dashboard: {ts['series']} series, {ts['dates']:,} dates, as of {ts['asof']}, "
+            f"{ts['curves']} curve(s), {ts['cleaned_points']} point(s) blanked as missing/outlier"
+        )
+        for note in ts["notes"]:
+            print(f"    ::warning::{note}")
         if f["sheets_hidden"] or f["sheets_excluded"]:
             print(f"    (hidden sheets skipped: {f['sheets_hidden']}, sheets excluded by config: {f['sheets_excluded']})")
 

@@ -131,6 +131,11 @@ def render_sheet(file_path: str, sheet: Dict[str, Any], cfg: Dict[str, Any], lev
         out.append("_빈 시트입니다._")
         out.append("")
         return out
+    if sheet["state"] == "timeseries":
+        for note in sheet.get("notes", []):
+            out.append(f"- 📈 {md_cell(note, 300)}")
+        out.append("")
+        return out
     if sheet.get("title"):
         out.append(f"> 제목 행: {md_cell(sheet['title'], 200)}")
         out.append("")
@@ -183,6 +188,66 @@ def render_sheet(file_path: str, sheet: Dict[str, Any], cfg: Dict[str, Any], lev
     return out
 
 
+UNIT_SUFFIX = {"pct": "%", "bp": "bp", "level": "", "pts": "", "amount": ""}
+HORIZON_KEYS = (("d1", "1일"), ("w1", "1주"), ("m1", "1개월"), ("ytd", "연초 대비"), ("y1", "1년"))
+
+
+def fmt_ts_value(value: Any, unit: str, decimals: int) -> str:
+    if value is None:
+        return "–"
+    if unit == "amount":
+        return f"{value:,.0f}"
+    return f"{value:,.{decimals}f}{UNIT_SUFFIX.get(unit, '')}"
+
+
+def fmt_ts_change(latest: Any, base: Any, unit: str) -> str:
+    """Change between two observations: bp for yields/spreads, % for levels, points for indices."""
+    if latest is None or base is None:
+        return "–"
+    if unit == "pct":
+        return f"{(latest - base) * 100:+.1f}bp"
+    if unit == "bp":
+        return f"{latest - base:+.1f}bp"
+    if unit == "level":
+        return "–" if base == 0 else f"{(latest / base - 1) * 100:+.2f}%"
+    return f"{latest - base:+,.2f}"
+
+
+def render_timeseries_section(ts: Dict[str, Any], pages_url: str, level: int) -> List[str]:
+    cats = " · ".join(f"{c['label']} {c['count']}" for c in ts["categories"])
+    out: List[str] = [f"### 📈 시계열 지표 (기준일 {ts['asof']})", ""]
+    out.append(f"- 지표 {ts['series_count']}개 · 날짜 {fmt_number(ts['dates'])}개 ({ts['first_date']} ~ {ts['last_date']}) · 분류: {md_cell(cats, 200)}")
+    for src in ts["sources"]:
+        out.append(f"- 원본: {md_cell(src['file'], 120)} / 시트 {md_cell(src['sheet'], 80)} (지표 {src['series']}개, 헤더 {src['header_row']}행)")
+        for note in src.get("notes", []):
+            out.append(f"  - ℹ️ {md_cell(note, 300)}")
+    if ts["cleaning"]["enabled"]:
+        out.append(f"- 정제: 결측을 뜻하는 0 값과 하루짜리 이상치 {fmt_number(ts['cleaning']['points'])}개 점을 빈 값으로 처리 (원본 파일은 바뀌지 않음)")
+    for note in ts.get("notes", []):
+        out.append(f"- ⚠️ {md_cell(note, 300)}")
+    if ts["curves"]:
+        out.append("- 커브: " + md_cell(", ".join(f"{c['label']} ({c['tenors'][0]}~{c['tenors'][-1]})" for c in ts["curves"]), 400))
+    out.append(f"- 전체 지표·차트·표: {pages_url}")
+    out.append("")
+    if level <= 2 and ts["highlights"]:
+        out.append("| 지표 | 기준일 | 최근값 | " + " | ".join(label for _, label in HORIZON_KEYS) + " |")
+        out.append("|---|---|---:|" + "---:|" * len(HORIZON_KEYS))
+        for s in ts["highlights"]:
+            latest = s["latest"]["value"] if s.get("latest") else None
+            if s["unit"] == "amount":
+                sums = s.get("sums") or {}
+                cells = [fmt_ts_value(sums.get(k), "amount", 0) for k in ("d1", "d5", "d20", "mtd", "ytd")]
+                changes = " | ".join(cells)
+                name = f"{md_cell(s['name'])} (합계: 1일/5일/20일/월간/연간)"
+            else:
+                bases = s.get("bases") or {}
+                changes = " | ".join(fmt_ts_change(latest, (bases.get(k) or {}).get("value"), s["unit"]) for k, _ in HORIZON_KEYS)
+                name = md_cell(s["name"])
+            out.append(f"| {name} | {s['latest']['date'] if s.get('latest') else '–'} | {fmt_ts_value(latest, s['unit'], s['decimals'])} | {changes} |")
+        out.append("")
+    return out
+
+
 def policy_text(cfg: Dict[str, Any]) -> str:
     if cfg["mode"] == "rows":
         text = (
@@ -215,6 +280,8 @@ def render_block_at_level(data: Dict[str, Any], cfg: Dict[str, Any], pages_url: 
     if not data["files"]:
         lines.append("_공개할 워크북이 없습니다._")
         lines.append("")
+    if data.get("timeseries"):
+        lines += render_timeseries_section(data["timeseries"], pages_url, level)
     for f in data["files"]:
         lines.append(f"### 📁 {md_cell(f['path'], 120)}")
         lines.append("")
