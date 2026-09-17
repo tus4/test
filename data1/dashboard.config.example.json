@@ -24,5 +24,17 @@
   "charts": true,
   "publish_top_values": true,
   "readme": { "charts": true, "xychart": false, "preview": true },
-  "fail_if_no_workbooks": true
+  "fail_if_no_workbooks": true,
+  "_timeseries": "Wide daily time-series sheets (a DATES / 일자 header row followed by dated rows; optional Category / Ticker / Notation rows above it) are published in full as the market dashboard (index.html). highlights = KPI tiles, featured = overview charts (mode: level | diff | rebase), clean_outliers = blank zeros that mean 'no quote' and one-day spikes.",
+  "timeseries": {
+    "enabled": true,
+    "highlights": ["한국_기준금리", "한국_3Y", "한국_10Y", "UST2Y", "UST10Y", "USDKRW"],
+    "featured": [
+      { "title": "한·미 국채 금리", "series": ["한국_3Y", "한국_10Y", "UST2Y", "UST10Y"] },
+      { "title": "주요 환율 (기간 초 = 100)", "series": ["USDKRW", "USDJPY", "DXY"], "mode": "rebase" }
+    ],
+    "clean_outliers": true,
+    "spark_points": 52,
+    "max_series": 1000
+  }
 }

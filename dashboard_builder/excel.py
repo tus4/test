@@ -9,6 +9,7 @@ kept in memory, aggregates are computed over up to ``max_scan_rows`` rows.
 from __future__ import annotations
 
 import fnmatch
+import itertools
 import math
 import xml.etree.ElementTree as ET
 import zipfile
@@ -31,6 +32,7 @@ from .analyze import (
     parse_numeric_text,
 )
 from .common import BuildError, fingerprint, truncate
+from .timeseries import DETECT_ROWS, detect_timeseries, extract_timeseries_sheet, timeseries_stub
 
 WORKBOOK_SUFFIXES = (".xlsx", ".xlsm")
 HARD_COLUMN_CAP = 1000          # columns tracked during the scan before the configured cap applies
@@ -621,8 +623,10 @@ def extract_workbook(path: Path, rel_path: str, cfg: Dict[str, Any]) -> Dict[str
         wb_formula = None
     merged_all = header_merged_ranges(path, cfg["header_scan_rows"] + 5)
     sheets: List[Dict[str, Any]] = []
+    timeseries: List[Dict[str, Any]] = []
     n_hidden = 0
     n_excluded = 0
+    ts_enabled = cfg.get("timeseries", {}).get("enabled", True)
     try:
         for ws in wb.worksheets:
             name = ws.title
@@ -635,6 +639,22 @@ def extract_workbook(path: Path, rel_path: str, cfg: Dict[str, Any]) -> Dict[str
             if name_matches(name, cfg["exclude_sheets"]):
                 n_excluded += 1
                 continue
+            if ts_enabled:
+                # Wide daily time-series sheets (market-data exports) are published in full as a
+                # market dashboard instead of as a capped table; see timeseries.py.
+                try:
+                    head = list(itertools.islice(ws.iter_rows(values_only=True), DETECT_ROWS))
+                    header_idx = detect_timeseries(head)
+                    if header_idx is not None:
+                        ts = extract_timeseries_sheet(ws, name, cfg, head, header_idx)
+                        ts["file"] = rel_path
+                        timeseries.append(ts)
+                        sheets.append(timeseries_stub(ts))
+                        continue
+                except BuildError:
+                    raise
+                except Exception as exc:
+                    raise BuildError(f"{rel_path} / sheet '{name}': cannot read time series ({type(exc).__name__}: {exc})") from exc
             ws_formula = None
             if wb_formula is not None and name in wb_formula.sheetnames:
                 ws_formula = wb_formula[name]
@@ -655,8 +675,9 @@ def extract_workbook(path: Path, rel_path: str, cfg: Dict[str, Any]) -> Dict[str
         notes.append(f"설정으로 제외한 시트 {n_excluded}개는 공개하지 않습니다.")
     return {
         "path": rel_path,
-        "fingerprint": fingerprint([[s["name"], s["columns"], s["rows"], s["rows_total"]] for s in sheets]),
+        "fingerprint": fingerprint([[s["name"], s["columns"], s["rows"], s["rows_total"], s.get("fingerprint")] for s in sheets]),
         "sheets": sheets,
+        "timeseries": timeseries,
         "sheets_hidden": n_hidden,
         "sheets_excluded": n_excluded,
         "notes": notes,
